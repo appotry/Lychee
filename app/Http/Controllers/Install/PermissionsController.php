@@ -2,24 +2,19 @@
 
 namespace App\Http\Controllers\Install;
 
-use App\Actions\Install\DefaultConfig;
-use App\Actions\Install\PermissionsChecker;
-use App\Http\Controllers\Controller;
+use App\Actions\InstallUpdate\DefaultConfig;
+use App\Actions\InstallUpdate\PermissionsChecker;
+use Illuminate\Contracts\View\View;
+use Illuminate\Routing\Controller;
 
 final class PermissionsController extends Controller
 {
-	/**
-	 * @var PermissionsChecker
-	 */
-	protected $permissions;
-	/**
-	 * @var DefaultConfig
-	 */
-	protected $config;
+	private PermissionsChecker $permissions;
+	private DefaultConfig $config;
 
 	/**
 	 * @param PermissionsChecker $checker
-	 * @param Config             $config
+	 * @param DefaultConfig      $config
 	 */
 	public function __construct(PermissionsChecker $checker, DefaultConfig $config)
 	{
@@ -30,7 +25,7 @@ final class PermissionsController extends Controller
 	/**
 	 * @return View
 	 */
-	public function view()
+	public function view(): View
 	{
 		$perms = $this->permissions->check(
 			$this->config->get_permissions()

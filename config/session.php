@@ -71,20 +71,8 @@ return [
 	|
 	*/
 
-	'connection' => null,
-
-	/*
-	|--------------------------------------------------------------------------
-	| Session Database Connection
-	|--------------------------------------------------------------------------
-	|
-	| When using the "database" or "redis" session drivers, you may specify a
-	| connection that should be used to manage these sessions. This should
-	| correspond to a connection in your database configuration options.
-	|
-	*/
-
-	'connection' => env('SESSION_CONNECTION', null),
+	'connection' => env('SESSION_DRIVER') === 'database' ?
+		env('DB_CONNECTION', 'mysql') : 'cache',
 
 	/*
 	|--------------------------------------------------------------------------
@@ -112,7 +100,7 @@ return [
 	|
 	*/
 
-	'store' => env('SESSION_STORE', null),
+	'store' => env('SESSION_STORE'),
 
 	/*
 	|--------------------------------------------------------------------------
@@ -140,7 +128,7 @@ return [
 
 	'cookie' => env(
 		'SESSION_COOKIE',
-		Str::slug(env('APP_NAME', 'lychee'), '_') . '_session'
+		Str::slug((string) env('APP_NAME', 'Lychee'), '_') . '_session'
 	),
 
 	/*
@@ -167,7 +155,7 @@ return [
 	|
 	*/
 
-	'domain' => env('SESSION_DOMAIN', null),
+	'domain' => env('SESSION_DOMAIN'),
 
 	/*
 	|--------------------------------------------------------------------------

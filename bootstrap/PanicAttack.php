@@ -1,5 +1,10 @@
 <?php
 
+/**
+ * Basic PanicAttack class.
+ *
+ * Used only in case of emergency: e.g. vendor not found
+ */
 class PanicAttack
 {
 	private $title = '';
@@ -50,7 +55,7 @@ class PanicAttack
 	{
 		$this->title = 'ROOT';
 		$this->code = 403;
-		$this->message = '<span class="important">This is the root directory and it MUST NOT BE PUBLICALLY ACCESSIBLE.</span><br>
+		$this->message = '<span class="important">This is the root directory and MUST NOT BE PUBLICLY ACCESSIBLE.</span><br>
 		To access Lychee, go <a href="public/">here</a>.';
 		$this->displaySimpleError();
 	}
@@ -128,12 +133,5 @@ class PanicAttack
 				$this->$fun();
 			}
 		}
-		// var_dump($error_message);
-		// if nothing has been catched so far
-		// $this->title = 'Error !';
-		// $this->code = 500;
-		// $this->message = 'Oups, something went wrong !';
-		// $this->message = $last_error['message'];
-		// $this->displaySimpleError();
 	}
 }

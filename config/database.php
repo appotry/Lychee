@@ -18,6 +18,21 @@ return [
 
 	/*
 	|--------------------------------------------------------------------------
+	| Log DB SQL statements
+	|--------------------------------------------------------------------------
+	|
+	| If set to true, all SQL statements will be logged to a text file below
+	| storage.
+	| Only use it for debugging and development purposes as it slows down
+	| the performance of the application
+	|
+	*/
+
+	'db_log_sql' => (bool) env('DB_LOG_SQL', false),
+	'explain' => (bool) env('DB_LOG_SQL_EXPLAIN', false),
+
+	/*
+	|--------------------------------------------------------------------------
 	| Database Connections
 	|--------------------------------------------------------------------------
 	|
@@ -38,7 +53,7 @@ return [
 			'url' => env('DATABASE_URL'),
 			'database' => env('DB_DATABASE', database_path('database.sqlite')),
 			'prefix' => '',
-			'foreign_key_constraints' => env('DB_FOREIGN_KEYS', true),
+			'foreign_key_constraints' => true,
 		],
 
 		'mysql' => [
@@ -66,7 +81,40 @@ return [
 			'engine' => 'InnoDB ROW_FORMAT=DYNAMIC',
 			'options' => extension_loaded('pdo_mysql') ? array_filter([
 				PDO::MYSQL_ATTR_SSL_CA => env('MYSQL_ATTR_SSL_CA'),
-			]) : [],
+			],
+				fn ($elem) => ($elem !== null && $elem !== ''),
+			) : [],
+			// Ensure a deterministic SQL mode for MySQL/MariaDB.
+			// Don't rely on accidentally correct, system-wide settings of the
+			// DB service.
+			'modes' => [
+				// If strict mode is not enable, MySQL "cleverly" converts
+				// invalid data on INSERT/UPDATE/etc. to something which MySQL
+				// believes you wanted.
+				// Overflow/underflow of values is silently ignored.
+				// We want strict mode, because any error probably indicates
+				// a bug in Lychee which should be fixed.
+				'STRICT_ALL_TABLES',
+				// same as above, but for transactional storage engines, like InnoDB
+				'STRICT_TRANS_TABLES',
+				// Nomen est omen, for some versions of MySQL not included in
+				// `STRICT_ALL_TABLES` and hence must be set separately.
+				'ERROR_FOR_DIVISION_BY_ZERO',
+				// don't accept 00.00.0000 as a date
+				'NO_ZERO_DATE',
+				// don't accept dates as valid whose month or day component is
+				// zero, i.e. refuse 00.05.2021 or 13.00.2021 as invalid
+				'NO_ZERO_IN_DATE',
+				// Disable the probably most stupid feature of MySQL.
+				// If one INSERTS a DB row with id=0, then MySQL replaces the
+				// ID with latest auto-increment value plus one. WTF?!
+				// As our admin user has ID=0, we want 0 to be 0 when we
+				// insert 0 and not some "auto-magical" replacement.
+				'NO_AUTO_VALUE_ON_ZERO',
+				// Don't silently use another DB engine, if the selected
+				// DB engin (InnoDB) is not available.
+				'NO_ENGINE_SUBSTITUTION ',
+			],
 		],
 
 		'pgsql' => [
@@ -88,7 +136,7 @@ return [
 			'timezone' => 'UTC',
 			'prefix' => '',
 			'prefix_indexes' => true,
-			'schema' => 'public',
+			'search_path' => 'public',
 			'sslmode' => 'prefer',
 		],
 
@@ -131,22 +179,26 @@ return [
 	*/
 
 	'redis' => [
-		'client' => env('REDIS_CLIENT', 'phpredis'),
+		'client' => 'phpredis',
 
 		'options' => [
 			'cluster' => env('REDIS_CLUSTER', 'redis'),
-			'prefix' => env('REDIS_PREFIX', Str::slug(env('APP_NAME', 'laravel'), '_') . '_database_'),
+			'prefix' => env('REDIS_PREFIX', Str::slug((string) env('APP_NAME', 'Lychee'), '_') . '_database_'),
 		],
 
 		'default' => [
+			'scheme' => env('REDIS_SCHEME', 'tcp'),
+			'path' => env('REDIS_PATH', null),
 			'url' => env('REDIS_URL'),
 			'host' => env('REDIS_HOST', '127.0.0.1'),
-			'password' => env('REDIS_PASSWORD', null),
+			'password' => env('REDIS_PASSWORD'),
 			'port' => env('REDIS_PORT', '6379'),
 			'database' => env('REDIS_DB', '0'),
 		],
 
 		'cache' => [
+			'scheme' => env('REDIS_SCHEME', 'tcp'),
+			'path' => env('REDIS_PATH', null),
 			'url' => env('REDIS_URL'),
 			'host' => env('REDIS_HOST', '127.0.0.1'),
 			'password' => env('REDIS_PASSWORD', null),
@@ -154,4 +206,7 @@ return [
 			'database' => env('REDIS_CACHE_DB', '1'),
 		],
 	],
+
+	// Only list fk keys in debug mode.
+	'list_foreign_keys' => (bool) env('DB_LIST_FOREIGN_KEYS', false) && (bool) env('APP_DEBUG', false),
 ];

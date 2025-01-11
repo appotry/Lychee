@@ -2,10 +2,13 @@
 
 namespace App\Models\Extensions;
 
+use App\Exceptions\Internal\LycheeLogicException;
 use Carbon\CarbonInterface;
+use Carbon\Exceptions\InvalidTimeZoneException;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Date;
 use InvalidArgumentException;
+use function Safe\preg_match;
 
 /**
  * Trait UTCBasedTimes.
@@ -21,14 +24,14 @@ use InvalidArgumentException;
  *
  * **Attention:**
  * For this class to work properly, the timezone of the database connection
- * must be set to UTC for those RDBM systems (e.g. PosgreSQL, MySQL) which
+ * must be set to UTC for those RDBM systems (e.g. PostgreSQL, MySQL) which
  * support "timezone aware" database connections.
  * This means the database configuration for MySQL should explicitly include
  * the option `'timezone' => '+00:00'` and the configuration for PostgreSQL
  * should explicitly include the option `'timezone => 'UTC'`.
- * Otherwise those RDBM system interpret a SQL datetime string without an
+ * Otherwise, those RDBM systems interpret an SQL datetime string without an
  * explicit timezone relative to their own default timezone.
- * The default timezone of the database connection might or might or might not
+ * The default timezone of the database connection might or might not
  * be UTC and might or might not be equal to the default timezone of the PHP
  * application.
  * Hence, it is always a good thing to set the timezone of the database
@@ -40,7 +43,7 @@ use InvalidArgumentException;
 trait UTCBasedTimes
 {
 	private static string $DB_TIMEZONE_NAME = 'UTC';
-	private static string $DB_DATETIME_FORMAT = 'Y-m-d H:i:s';
+	private static string $DB_DATETIME_FORMAT = 'Y-m-d H:i:s.u';
 	private static string $STANDARD_DATE_PATTERN = '/^(\d{4})-(\d{1,2})-(\d{1,2})$/';
 
 	/**
@@ -70,17 +73,20 @@ trait UTCBasedTimes
 	 *
 	 * @param mixed $value
 	 *
-	 * @return ?string
+	 * @return string|null
+	 *
+	 * @throws InvalidTimeZoneException
 	 */
 	public function fromDateTime($value): ?string
 	{
 		// If $value is already an instance of Carbon, the method returns a
-		// deep copy, hence it is save to change the timezone below without
+		// deep copy, hence it is safe to change the timezone below without
 		// altering the original object
-		$carbonTime = $this->asDateTime($value);
-		if (empty($carbonTime)) {
+		if ($value === null || $value === '') {
 			return null;
 		}
+
+		$carbonTime = $this->asDateTime($value);
 		$carbonTime->setTimezone(self::$DB_TIMEZONE_NAME);
 
 		return $carbonTime->format(self::$DB_DATETIME_FORMAT);
@@ -122,12 +128,14 @@ trait UTCBasedTimes
 	 *
 	 * @param mixed $value
 	 *
-	 * @return Carbon|null
+	 * @return Carbon
+	 *
+	 * @throws InvalidTimeZoneException
 	 */
-	public function asDateTime($value): ?Carbon
+	public function asDateTime($value): Carbon
 	{
-		if (empty($value)) {
-			return null;
+		if ($value === null || $value === '') {
+			throw new LycheeLogicException('asDateTime called on null or empty string');
 		}
 
 		// If this value is already a Carbon instance, we shall just return it as is.
@@ -142,7 +150,8 @@ trait UTCBasedTimes
 		// when checking the field. We will just return the DateTime right away.
 		if ($value instanceof \DateTimeInterface) {
 			return Date::parse(
-				$value->format('Y-m-d H:i:s.u'), $value->getTimezone()
+				$value->format('Y-m-d H:i:s.u'),
+				$value->getTimezone()
 			);
 		}
 
@@ -163,31 +172,30 @@ trait UTCBasedTimes
 		// Applied patch: The standard date format Y-m-d _without_ a timezone
 		// is interpreted relative to UTC and _then_ set to the
 		// application's default timezone.
-		if (preg_match(self::$STANDARD_DATE_PATTERN, $value)) {
-			$result = Date::createFromFormat(
-				'Y-m-d', $value, self::$DB_TIMEZONE_NAME
-			)->startOfDay();
-			$result->setTimezone(date_default_timezone_get());
+		if (preg_match(self::$STANDARD_DATE_PATTERN, $value) === 1) {
+			$date = Date::createFromFormat('Y-m-d', $value, self::$DB_TIMEZONE_NAME);
+			$date = $date !== false ? $date : null;
+			$result = $date?->startOfDay();
+			$result?->setTimezone(date_default_timezone_get());
 
 			return $result;
 		}
 
 		// Finally, we will just assume this date is in the format used by default on
 		// the database connection and use that format to create the Carbon object
-		// that is returned back out to the developers after we convert it here.
+		// that is returned to the caller after we convert it here.
 		// Applied patch: Use 'UTC' as the default timezone for string
 		// formats which do not include timezone information.
 		// Note that the timezone parameter is ignored for formats which
 		// include explicit timezone information.
 		try {
-			$result = Date::createFromFormat(
-				self::$DB_DATETIME_FORMAT, $value, self::$DB_TIMEZONE_NAME
-			);
-			if ($result->getTimezone()->getName() === self::$DB_TIMEZONE_NAME) {
+			$result = Date::createFromFormat(self::$DB_DATETIME_FORMAT, $value, self::$DB_TIMEZONE_NAME);
+			$result = $result !== false ? $result : null;
+			if ($result?->getTimezone()?->getName() === self::$DB_TIMEZONE_NAME) {
 				// If the timezone is different to UTC, we don't set it, because then
 				// the timezone came from the input string.
 				// If the timezone equals UTC, then we assume that no explicit timezone
-				// information has been given and we set it to the application's
+				// information has been given, and we set it to the application's
 				// default time zone.
 				// This is a no-op, if the application's default timezone equals 'UTC'
 				// anyway.
@@ -197,9 +205,9 @@ trait UTCBasedTimes
 			}
 
 			return $result;
-		} catch (InvalidArgumentException $e) {
+		} catch (\InvalidArgumentException) {
 			// If the specified format did not mach, don't throw an exception,
-			// but try to parse the value using an best-effort approach, see below
+			// but try to parse the value using a best-effort approach, see below
 		}
 
 		// Might throw an InvalidArgumentException if no recognized format is found,
@@ -216,7 +224,7 @@ trait UTCBasedTimes
 	 * Prepares a date for array/JSON serialization.
 	 *
 	 * In contrast to the original implementation, this one serializes the
-	 * timezone "as is".
+	 * timezone "as is" and includes fractions of seconds.
 	 *
 	 * @param \DateTimeInterface $date
 	 *
@@ -224,6 +232,6 @@ trait UTCBasedTimes
 	 */
 	protected function serializeDate(\DateTimeInterface $date): string
 	{
-		return $date->format(\DateTimeInterface::ATOM);
+		return $date->format('Y-m-d\TH:i:sP');
 	}
 }
