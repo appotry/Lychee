@@ -1,91 +1,82 @@
 <?php
 
+/**
+ * SPDX-License-Identifier: MIT
+ * Copyright (c) 2017-2018 Tobias Reich
+ * Copyright (c) 2018-2025 LycheeOrg.
+ */
+
 namespace App\Actions\Import;
 
-use App\Models\Configs;
+use App\DTO\ImportMode;
+use App\Models\Album;
+use function Safe\ini_get;
 use Symfony\Component\HttpFoundation\StreamedResponse;
 
 class FromServer
 {
-	/** @var Exec */
-	private $exec;
-
-	public function __construct(Exec $exec)
+	/**
+	 * @param string[]   $paths           the server path to import from
+	 * @param Album|null $album           the album to import into
+	 * @param ImportMode $importMode      the import mode
+	 * @param int        $intendedOwnerId the intended owner of those pictures
+	 *
+	 * @return StreamedResponse
+	 */
+	public function do(array $paths, ?Album $album, ImportMode $importMode, int $intendedOwnerId): StreamedResponse
 	{
-		$this->exec = $exec;
-	}
-
-	public function do($validated)
-	{
-		if (isset($validated['delete_imported'])) {
-			$this->exec->delete_imported = ($validated['delete_imported'] === '1');
-		} else {
-			$this->exec->delete_imported = (Configs::get_value('delete_imported', '0') === '1');
-		}
-		if (isset($validated['import_via_symlink'])) {
-			$this->exec->import_via_symlink = ($validated['import_via_symlink'] === '1');
-		} else {
-			$this->exec->import_via_symlink = (Configs::get_value('import_via_symlink', '0') === '1');
-		}
-		if (isset($validated['skip_duplicates'])) {
-			$this->exec->skip_duplicates = ($validated['skip_duplicates'] === '1');
-		} else {
-			$this->exec->skip_duplicates = (Configs::get_value('skip_duplicates', '0') === '1');
-		}
-		if (isset($validated['resync_metadata'])) {
-			$this->exec->resync_metadata = ($validated['resync_metadata'] === '1');
-		} else {
-			// do we need a default?
-			//			$this->exec->resync_metadata = (Configs::get_value('resync_metadata', '0') === '1');
-			$this->exec->resync_metadata = false;
-		}
-
-		// memory_limit can have a K/M/etc suffix which makes querying it
-		// more complicated...
-		if (sscanf(ini_get('memory_limit'), '%d%c', $this->exec->memLimit, $memExt) === 2) {
-			switch (strtolower($memExt)) {
-					// @codeCoverageIgnoreStart
-				case 'k':
-					$this->exec->memLimit *= 1024;
-					break;
-				case 'm':
-					$this->exec->memLimit *= 1024 * 1024;
-					break;
-				case 'g':
-					$this->exec->memLimit *= 1024 * 1024 * 1024;
-					break;
-				case 't':
-					$this->exec->memLimit *= 1024 * 1024 * 1024 * 1024;
-					break;
-				default:
-					break;
-					// @codeCoverageIgnoreEnd
-			}
-		}
-		// We set the warning threshold at 90% of the limit.
-		$this->exec->memLimit = intval($this->exec->memLimit * 0.9);
+		$exec = new Exec($importMode, $intendedOwnerId, false, $this->determineMemLimit());
 
 		$response = new StreamedResponse();
-		$response->setCallback(function () use ($validated) {
-			// Surround the response in '"' characters to make it a valid
-			// JSON string.
-			echo '"';
-			$this->exec->do($validated['path'], $validated['albumID']);
-			echo '"';
-		});
+		$response->headers->set('Content-Type', 'application/json');
+		$response->headers->set('Cache-Control', 'no-store');
 		// nginx-specific voodoo, as per https://symfony.com/doc/current/components/http_foundation.html#streaming-a-response
 		$response->headers->set('X-Accel-Buffering', 'no');
+		$response->setCallback(function () use ($paths, $album, $exec) {
+			// Surround the response by `[]` to make it a valid JSON array.
+			echo '[';
+			foreach ($paths as $path) {
+				$exec->do($path, $album);
+			}
+			echo ']';
+		});
 
 		return $response;
 	}
 
-	public function enableCLIStatus()
+	/**
+	 * Determines the memory limit set by PHP configuration.
+	 *
+	 * The option `memory_limit` may have a K/M/etc. suffix which makes
+	 * querying it more complicated...
+	 *
+	 * @return int the memory limit in bytes
+	 */
+	protected function determineMemLimit(): int
 	{
-		$this->exec->statusCLIFormatting = true;
-	}
+		$value = 0;
+		$suffix = '';
 
-	public function disableMemCheck()
-	{
-		$this->exec->memCheck = false;
+		sscanf(ini_get('memory_limit'), '%d%c', $value, $suffix);
+		if (!is_int($value) && !is_string($suffix)) {
+			// @codeCoverageIgnoreStart
+			return 0;
+			// @codeCoverageIgnoreEnd
+		}
+
+		/** @var int $value */
+		/** @var string $suffix */
+		$value *= match (strtolower($suffix)) {
+			// @codeCoverageIgnoreStart
+			'k' => 1024,
+			'm' => 1024 * 1024,
+			'g' => 1024 * 1024 * 1024,
+			't' => 1024 * 1024 * 1024 * 1024,
+			default => 1,
+			// @codeCoverageIgnoreEnd
+		};
+
+		// We set the warning threshold at 90% of the limit.
+		return intval($value * 0.9);
 	}
 }

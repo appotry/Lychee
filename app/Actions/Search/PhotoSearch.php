@@ -1,74 +1,79 @@
 <?php
 
+/**
+ * SPDX-License-Identifier: MIT
+ * Copyright (c) 2017-2018 Tobias Reich
+ * Copyright (c) 2018-2025 LycheeOrg.
+ */
+
 namespace App\Actions\Search;
 
-use App\Actions\Albums\Extensions\PublicIds;
-use App\Facades\AccessControl;
-use App\ModelFunctions\SymLinkFunctions;
+use App\Contracts\Exceptions\InternalLycheeException;
+use App\DTO\PhotoSortingCriterion;
+use App\Eloquent\FixedQueryBuilder;
+use App\Models\Album;
 use App\Models\Configs;
+use App\Models\Extensions\SortingDecorator;
 use App\Models\Photo;
+use App\Policies\PhotoQueryPolicy;
 use Illuminate\Database\Eloquent\Builder;
+use Illuminate\Database\Eloquent\Collection;
 
 class PhotoSearch
 {
-	/**
-	 * @var SymLinkFunctions
-	 */
-	private $symLinkFunctions;
+	protected PhotoQueryPolicy $photoQueryPolicy;
 
-	/**
-	 * @param SymLinkFunctions $symLinkFunctions
-	 */
-	public function __construct(
-		SymLinkFunctions $symLinkFunctions
-	) {
-		$this->symLinkFunctions = $symLinkFunctions;
+	public function __construct(PhotoQueryPolicy $photoQueryPolicy)
+	{
+		$this->photoQueryPolicy = $photoQueryPolicy;
 	}
 
-	private function unsorted_or_public(Builder $query)
+	/**
+	 * Apply search directly.
+	 *
+	 * @param array<int,string> $terms
+	 *
+	 * @return Collection<int,Photo> photos
+	 *
+	 * @throws InternalLycheeException
+	 */
+	public function query(array $terms): Collection
 	{
-		if (AccessControl::is_admin()) {
-			return $query->orWhere('album_id', '=', null);
-		}
+		$query = $this->sqlQuery($terms);
+		$sorting = PhotoSortingCriterion::createDefault();
 
-		if (AccessControl::can_upload()) {
-			$query = $query->orWhere(fn ($q) => $q->where('album_id', '=', null)->where('owner_id', '=', AccessControl::id()));
-		}
-
-		if (Configs::get_value('public_photos_hidden', '1') === '0') {
-			$query = $query->orWhere('public', '=', 1);
-		}
-
-		return $query;
+		return (new SortingDecorator($query))
+			->orderBy($sorting->column, $sorting->order)->get();
 	}
 
-	public function query(array $terms)
+	/**
+	 * Create the query manually.
+	 *
+	 * @param array<int,string> $terms
+	 * @param Album|null        $album the optional top album which is used as a search base
+	 *
+	 * @return FixedQueryBuilder<Photo>
+	 */
+	public function sqlQuery(array $terms, ?Album $album = null): Builder
 	{
-		$albumIDs = resolve(PublicIds::class)->getPublicAlbumsId();
+		$query = $this->photoQueryPolicy->applySearchabilityFilter(
+			query: Photo::query()->with(['album', 'size_variants', 'size_variants.sym_links']),
+			origin: $album,
+			include_nsfw: !Configs::getValueAsBool('hide_nsfw_in_search')
+		);
 
-		$query = Photo::with('album')
-			->where(fn ($q) => $this->unsorted_or_public($q->whereIn('album_id', $albumIDs)));
-
-		foreach ($terms as $escaped_term) {
+		foreach ($terms as $term) {
 			$query->where(
-				fn (Builder $query) => $query->where('title', 'like', '%' . $escaped_term . '%')
-					->orWhere('description', 'like', '%' . $escaped_term . '%')
-					->orWhere('tags', 'like', '%' . $escaped_term . '%')
-					->orWhere('location', 'like', '%' . $escaped_term . '%')
-					->orWhere('model', 'like', '%' . $escaped_term . '%')
-					->orWhere('taken_at', 'like', '%' . $escaped_term . '%')
+				fn (FixedQueryBuilder $query) => $query
+					->where('title', 'like', '%' . $term . '%')
+					->orWhere('description', 'like', '%' . $term . '%')
+					->orWhere('tags', 'like', '%' . $term . '%')
+					->orWhere('location', 'like', '%' . $term . '%')
+					->orWhere('model', 'like', '%' . $term . '%')
+					->orWhere('taken_at', 'like', '%' . $term . '%')
 			);
 		}
 
-		$photos = $query->get();
-
-		return $photos->map(
-			function ($photo) {
-				$photo_array = $photo->toReturnArray();
-				$this->symLinkFunctions->getUrl($photo, $photo_array);
-
-				return $photo_array;
-			}
-		);
+		return $query;
 	}
 }

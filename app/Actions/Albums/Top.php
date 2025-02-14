@@ -1,59 +1,115 @@
 <?php
 
+/**
+ * SPDX-License-Identifier: MIT
+ * Copyright (c) 2017-2018 Tobias Reich
+ * Copyright (c) 2018-2025 LycheeOrg.
+ */
+
 namespace App\Actions\Albums;
 
-use App\Actions\Albums\Extensions\TopQuery;
-use App\Facades\AccessControl;
-use App\Models\Configs;
-use App\Models\Extensions\CustomSort;
+use App\Contracts\Exceptions\InternalLycheeException;
+use App\DTO\AlbumSortingCriterion;
+use App\DTO\TopAlbumDTO;
+use App\Enum\ColumnSortingType;
+use App\Enum\OrderSortingType;
+use App\Exceptions\ConfigurationKeyMissingException;
+use App\Exceptions\Internal\InvalidOrderDirectionException;
+use App\Factories\AlbumFactory;
+use App\Models\Album;
+use App\Models\Extensions\SortingDecorator;
+use App\Models\TagAlbum;
+use App\Policies\AlbumPolicy;
+use App\Policies\AlbumQueryPolicy;
+use App\SmartAlbums\BaseSmartAlbum;
 use Illuminate\Support\Collection as BaseCollection;
+use Illuminate\Support\Facades\Auth;
+use Illuminate\Support\Facades\Gate;
 
 class Top
 {
-	use TopQuery;
-	use CustomSort;
+	private AlbumQueryPolicy $albumQueryPolicy;
+	private AlbumFactory $albumFactory;
+	private AlbumSortingCriterion $sorting;
 
 	/**
-	 * @var string
+	 * @throws InvalidOrderDirectionException
+	 * @throws ConfigurationKeyMissingException
 	 */
-	private $sortingCol;
-
-	/**
-	 * @var string
-	 */
-	private $sortingOrder;
-
-	public function __construct()
+	public function __construct(AlbumFactory $albumFactory, AlbumQueryPolicy $albumQueryPolicy)
 	{
-		$this->sortingCol = Configs::get_value('sorting_Albums_col');
-		$this->sortingOrder = Configs::get_value('sorting_Albums_order');
+		$this->albumQueryPolicy = $albumQueryPolicy;
+		$this->albumFactory = $albumFactory;
+		$this->sorting = AlbumSortingCriterion::createDefault();
 	}
 
 	/**
-	 * Returns an array of top-level albums and shared albums visible to
-	 * the current user.
-	 * Note: the array may include password-protected albums that are not
+	 * Returns the top-level albums (but not tag albums) visible
+	 * to the current user.
+	 *
+	 * If the user is authenticated, then the result differentiates between
+	 * albums which are owned by the user and "shared" albums which the
+	 * user does not own, but is allowed to see.
+	 * The term "shared album" might be a little misleading here.
+	 * Albums which are owned by the user himself may also be shared (with
+	 * other users.)
+	 * Actually, in this context "shared albums" means "foreign albums".
+	 *
+	 * Note, the result may include password-protected albums that are not
 	 * accessible (but are visible).
 	 *
-	 * @return array[Collection[Album]]
+	 * @return TopAlbumDTO
+	 *
+	 * @throws InternalLycheeException
 	 */
-	public function get(): array
+	public function get(): TopAlbumDTO
 	{
-		$return = [
-			'albums' => new BaseCollection(),
-			'shared_albums' => new BaseCollection(),
-		];
+		// Do not eagerly load the relation `photos` for each smart album.
+		// On the albums overview, we only need a thumbnail for each album.
+		/** @var BaseCollection<int,BaseSmartAlbum> $smartAlbums */
+		$smartAlbums = $this->albumFactory
+			->getAllBuiltInSmartAlbums(false)
+			->filter(fn ($smartAlbum) => Gate::check(AlbumPolicy::CAN_SEE, $smartAlbum));
 
-		$sql = $this->createTopleveAlbumsQuery()->where('smart', '=', false);
-		$albumCollection = $this->customSort($sql, $this->sortingCol, $this->sortingOrder);
+		$tagAlbumQuery = $this->albumQueryPolicy
+			->applyVisibilityFilter(TagAlbum::query()->with(['access_permissions', 'owner']));
 
-		if (AccessControl::is_logged_in()) {
-			$id = AccessControl::id();
-			list($return['albums'], $return['shared_albums']) = $albumCollection->partition(fn ($album) => $album->owner_id == $id);
+		/** @var BaseCollection<int,TagAlbum> $tagAlbums */
+		/** @phpstan-ignore-next-line */
+		$tagAlbums = (new SortingDecorator($tagAlbumQuery))
+			->orderBy($this->sorting->column, $this->sorting->order)
+			->get();
+
+		/** @return AlbumBuilder $query */
+		$query = $this->albumQueryPolicy
+			->applyVisibilityFilter(Album::query()->with(['access_permissions', 'owner'])->whereIsRoot());
+
+		$userID = Auth::id();
+		if ($userID !== null) {
+			// For authenticated users we group albums by ownership.
+			/** @phpstan-ignore-next-line */
+			$albums = (new SortingDecorator($query))
+				->orderBy(ColumnSortingType::OWNER_ID, OrderSortingType::ASC)
+				->orderBy($this->sorting->column, $this->sorting->order)
+				->get();
+
+			/**
+			 * @var BaseCollection<int,Album> $a
+			 * @var BaseCollection<int,Album> $b
+			 */
+			list($a, $b) = $albums->partition(fn ($album) => $album->owner_id === $userID);
+
+			return new TopAlbumDTO($smartAlbums, $tagAlbums, $a->values(), $b->values());
 		} else {
-			$return['albums'] = $albumCollection;
-		}
+			// For anonymous users we don't want to implicitly expose
+			// ownership via sorting.
+			/** @var BaseCollection<int,Album> */
+			/** @phpstan-ignore-next-line */
+			$albums = (new SortingDecorator($query))
+				->orderBy($this->sorting->column, $this->sorting->order)
+				->get();
 
-		return $return;
+			return new TopAlbumDTO($smartAlbums, $tagAlbums, $albums);
+		}
 	}
 }

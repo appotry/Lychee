@@ -1,5 +1,11 @@
 <?php
 
+/**
+ * SPDX-License-Identifier: MIT
+ * Copyright (c) 2017-2018 Tobias Reich
+ * Copyright (c) 2018-2025 LycheeOrg.
+ */
+
 namespace App\Providers;
 
 use Illuminate\Support\Facades\Broadcast;
@@ -15,7 +21,5 @@ class BroadcastServiceProvider extends ServiceProvider
 	public function boot()
 	{
 		Broadcast::routes();
-
-		require base_path('routes/channels.php');
 	}
 }

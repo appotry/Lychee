@@ -1,25 +1,37 @@
 <?php
 
+/**
+ * SPDX-License-Identifier: MIT
+ * Copyright (c) 2017-2018 Tobias Reich
+ * Copyright (c) 2018-2025 LycheeOrg.
+ */
+
 namespace App\SmartAlbums;
 
-use App\Models\Configs;
-use App\Models\Photo;
+use App\Enum\SmartAlbumType;
+use App\Exceptions\ConfigurationKeyMissingException;
+use App\Exceptions\Internal\FrameworkException;
 use Illuminate\Database\Eloquent\Builder;
 
-class StarredAlbum extends SmartAlbum
+class StarredAlbum extends BaseSmartAlbum
 {
-	public $id = 'starred';
+	private static ?self $instance = null;
+	public const ID = SmartAlbumType::STARRED->value;
 
-	public function __construct()
+	/**
+	 * @throws ConfigurationKeyMissingException
+	 * @throws FrameworkException
+	 */
+	protected function __construct()
 	{
-		parent::__construct();
-
-		$this->title = 'starred';
-		$this->public = Configs::get_value('public_starred', '0') === '1';
+		parent::__construct(
+			SmartAlbumType::STARRED,
+			fn (Builder $q) => $q->where('photos.is_starred', '=', true)
+		);
 	}
 
-	public function get_photos(): Builder
+	public static function getInstance(): self
 	{
-		return Photo::stars()->where(fn ($q) => $this->filter($q));
+		return self::$instance ??= new self();
 	}
 }

@@ -1,25 +1,26 @@
 <?php
 
+/**
+ * SPDX-License-Identifier: MIT
+ * Copyright (c) 2017-2018 Tobias Reich
+ * Copyright (c) 2018-2025 LycheeOrg.
+ */
+
 namespace App\Http\Controllers\Install;
 
-use App\Actions\Install\DefaultConfig;
-use App\Actions\Install\RequirementsChecker;
-use App\Http\Controllers\Controller;
+use App\Actions\InstallUpdate\DefaultConfig;
+use App\Actions\InstallUpdate\RequirementsChecker;
+use Illuminate\Contracts\View\View;
+use Illuminate\Routing\Controller;
 
 final class RequirementsController extends Controller
 {
-	/**
-	 * @var RequirementsChecker
-	 */
-	protected $requirements;
-	/**
-	 * @var DefaultConfig
-	 */
-	protected $config;
+	private RequirementsChecker $requirements;
+	private DefaultConfig $config;
 
 	/**
 	 * @param RequirementsChecker $checker
-	 * @param Config              $config
+	 * @param DefaultConfig       $config
 	 */
 	public function __construct(RequirementsChecker $checker, DefaultConfig $config)
 	{
@@ -32,9 +33,9 @@ final class RequirementsController extends Controller
 	 *
 	 * @return View
 	 */
-	public function view()
+	public function view(): View
 	{
-		$phpSupportInfo = $this->requirements->checkPHPversion(
+		$phpSupportInfo = $this->requirements->checkPHPVersion(
 			$this->config->get_core()['minPhpVersion']
 		);
 		$reqs = $this->requirements->check(
