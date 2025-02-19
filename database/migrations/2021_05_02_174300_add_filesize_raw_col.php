@@ -1,12 +1,17 @@
 <?php
 
+/**
+ * SPDX-License-Identifier: MIT
+ * Copyright (c) 2017-2018 Tobias Reich
+ * Copyright (c) 2018-2025 LycheeOrg.
+ */
+
 use Illuminate\Database\Migrations\Migration;
 use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
 
-class AddFileSizeRawCol extends Migration
-{
+return new class() extends Migration {
 	private const TABLE_NAME = 'photos';
 	private const ID_COL_NAME = 'id';
 	private const OLD_COL_NAME = 'size';
@@ -14,10 +19,8 @@ class AddFileSizeRawCol extends Migration
 
 	/**
 	 * Run the migrations.
-	 *
-	 * @return void
 	 */
-	public function up()
+	public function up(): void
 	{
 		Schema::table(self::TABLE_NAME, function (Blueprint $table) {
 			$table->unsignedBigInteger(self::NEW_COL_NAME)->default(0)->after(self::OLD_COL_NAME);
@@ -25,6 +28,7 @@ class AddFileSizeRawCol extends Migration
 
 		DB::beginTransaction();
 
+		/** @var array<int,object{id:int,size:string}> */
 		$photos = DB::table(self::TABLE_NAME)
 			->select([self::ID_COL_NAME, self::OLD_COL_NAME])
 			->lazyById();
@@ -60,10 +64,8 @@ class AddFileSizeRawCol extends Migration
 
 	/**
 	 * Reverse the migrations.
-	 *
-	 * @return void
 	 */
-	public function down()
+	public function down(): void
 	{
 		Schema::table(self::TABLE_NAME, function (Blueprint $table) {
 			$table->string(self::OLD_COL_NAME, 20)->default('')->after(self::NEW_COL_NAME);
@@ -71,6 +73,7 @@ class AddFileSizeRawCol extends Migration
 
 		DB::beginTransaction();
 
+		/** @var array<int,object{id:int,filesize:int}> */
 		$photos = DB::table(self::TABLE_NAME)
 			->select([self::ID_COL_NAME, self::NEW_COL_NAME])
 			->lazyById();
@@ -94,4 +97,4 @@ class AddFileSizeRawCol extends Migration
 			$table->dropColumn(self::NEW_COL_NAME);
 		});
 	}
-}
+};

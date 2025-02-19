@@ -1,30 +1,49 @@
 #!/bin/sh
 NO_COLOR="\033[0m"
+RED="\033[38;5;009m"
 GREEN="\033[38;5;010m"
 ORANGE="\033[38;5;214m"
 
-echo "\n${GREEN}post merge hook start${NO_COLOR}\n"
+printf "\n${GREEN}post merge hook start${NO_COLOR}\n"
 
 # we check if vendor/bin/phpunit is present.
 # If yes this means we are in dev mode.
 PHPUNIT="vendor/bin/phpunit"
 
 if [ -f ".NO_AUTO_COMPOSER_MIGRATE" ]; then
-    echo "\n${ORANGE}composer and database migration skipped as per requested.${NO_COLOR}\n"
+    printf "\n${ORANGE}composer and database migration skipped as per requested.${NO_COLOR}\n"
 else
     if [ -x "$PHPUNIT" ]; then
-        echo "\n${ORANGE}Dev mode detected${NO_COLOR}\n"
-        echo "composer install --no-suggest"
-        composer install --no-suggest
+        printf "\n${ORANGE}Dev mode detected${NO_COLOR}\n"
+        echo "composer install"
+        composer install
+        if command -v npm > /dev/null; then
+            printf "\n${ORANGE}npm detected${NO_COLOR}\n"
+            echo "npm ci --no-audit --no-fund"
+            npm ci --no-audit --no-fund
+        else
+            printf "\n${RED}npm not found. Development will likely not be possible${NO_COLOR}\n"
+        fi
     else
-        echo "\n${ORANGE}--no-dev mode detected${NO_COLOR}\n"
-        echo "composer install --no-dev --prefer-dist --no-suggest"
-        composer install --no-dev --prefer-dist --no-suggest
+        printf "\n${ORANGE}--no-dev mode detected${NO_COLOR}\n"
+        echo "composer install --no-dev --prefer-dist"
+        composer install --no-dev --prefer-dist
+        if command -v npm > /dev/null; then
+            printf "\n${ORANGE}npm detected${NO_COLOR}\n"
+            echo "npm ci --no-audit --no-fund"
+            npm ci --no-audit --no-fund
+            echo "npm run build"
+            npm run build
+        else
+            printf "\n${RED}npm not found, front-end coul not be built.${NO_COLOR}\n"
+        fi
     fi
     if [ -f ".env" ]; then
+        echo "php artisan optimize --clever --dont-confirm=assume-no"
+        php artisan optimize --clever --dont-confirm=assume-no
         echo "php artisan migrate --force"
         php artisan migrate --force
     fi
 fi
 
-echo "\n${GREEN}post merge hook finish${NO_COLOR}\n"
+printf "\n${GREEN}post merge hook finish${NO_COLOR}\n"

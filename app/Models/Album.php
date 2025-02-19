@@ -1,297 +1,511 @@
 <?php
 
-/** @noinspection PhpUndefinedClassInspection */
+/**
+ * SPDX-License-Identifier: MIT
+ * Copyright (c) 2017-2018 Tobias Reich
+ * Copyright (c) 2018-2025 LycheeOrg.
+ */
 
 namespace App\Models;
 
-use App\Contracts\AlbumInterface;
-use App\Models\Extensions\AlbumBooleans;
-use App\Models\Extensions\AlbumCast;
-use App\Models\Extensions\AlbumGetters;
-use App\Models\Extensions\AlbumSetters;
-use App\Models\Extensions\AlbumStringify;
-use App\Models\Extensions\CustomSort;
-use App\Models\Extensions\NodeTrait;
-use App\Models\Extensions\UTCBasedTimes;
-use Exception;
-use Illuminate\Database\Eloquent\Builder;
+use App\Actions\Album\Delete;
+use App\DTO\AlbumSortingCriterion;
+use App\Enum\AspectRatioType;
+use App\Enum\ColumnSortingType;
+use App\Enum\LicenseType;
+use App\Enum\OrderSortingType;
+use App\Enum\TimelineAlbumGranularity;
+use App\Exceptions\ConfigurationKeyMissingException;
+use App\Exceptions\Internal\QueryBuilderException;
+use App\Exceptions\MediaFileOperationException;
+use App\Exceptions\ModelDBException;
+use App\Models\Builders\AlbumBuilder;
+use App\Models\Extensions\BaseAlbum;
+use App\Models\Extensions\ToArrayThrowsNotImplemented;
+use App\Relations\HasAlbumThumb;
+use App\Relations\HasManyChildAlbums;
+use App\Relations\HasManyChildPhotos;
+use App\Relations\HasManyPhotosRecursively;
 use Illuminate\Database\Eloquent\Collection;
-use Illuminate\Database\Eloquent\Model;
-use Illuminate\Database\Eloquent\Relations\BelongsTo;
-use Illuminate\Database\Eloquent\Relations\BelongsToMany;
-use Illuminate\Database\Eloquent\Relations\HasMany;
+use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Relations\HasOne;
-use Illuminate\Support\Carbon;
+use Illuminate\Database\Query\Builder as BaseBuilder;
+use Illuminate\Http\UploadedFile;
+use Illuminate\Support\Facades\Storage;
+use Kalnoy\Nestedset\Collection as NSCollection;
+use Kalnoy\Nestedset\DescendantsRelation;
+use Kalnoy\Nestedset\Node;
+use Kalnoy\Nestedset\NodeTrait;
 
 /**
- * App\Album.
+ * Class Album.
  *
- * @property int               $id
- * @property string            $title
- * @property int               $owner_id
- * @property int|null          $parent_id
- * @property string            $description
- * @property Carbon|null       $min_taken_at
- * @property Carbon|null       $max_taken_at
- * @property int               $public
- * @property int               $full_photo
- * @property int               $viewable
- * @property int               $downloadable
- * @property int               $share_button_visible
- * @property string|null       $password
- * @property string            $license
- * @property bool              $smart
- * @property text              $showtags
- * @property Carbon            $created_at
- * @property Carbon            $updated_at
- * @property Collection[Album] $children
- * @property User              $owner
- * @property Album             $parent
- * @property Collection[Photo] $photos
+ * @property string                   $id
+ * @property string|null              $parent_id
+ * @property Album|null               $parent
+ * @property Collection<int,Album>    $children
+ * @property int                      $num_children             The number of children.
+ * @property Collection<int,Photo>    $all_photos
+ * @property int                      $num_photos               The number of photos in this album (excluding photos in subalbums).
+ * @property LicenseType              $license
+ * @property string|null              $cover_id
+ * @property Photo|null               $cover
+ * @property string|null              $header_id
+ * @property Photo|null               $header
+ * @property string|null              $track_short_path
+ * @property string|null              $track_url
+ * @property AspectRatioType|null     $album_thumb_aspect_ratio
+ * @property TimelineAlbumGranularity $album_timeline
+ * @property int                      $_lft
+ * @property int                      $_rgt
+ * @property BaseAlbumImpl            $base_class
+ * @property User|null                $owner
  *
- * @method static Builder|Album newModelQuery()
- * @method static Builder|Album newQuery()
- * @method static Builder|Album query()
- * @method static Builder|Album whereCreatedAt($value)
- * @method static Builder|Album whereDescription($value)
- * @method static Builder|Album whereDownloadable($value)
- * @method static Builder|Album whereShareButtonVisible($value)
- * @method static Builder|Album whereId($value)
- * @method static Builder|Album whereLicense($value)
- * @method static Builder|Album whereMaxTakestamp($value)
- * @method static Builder|Album whereMinTakestamp($value)
- * @method static Builder|Album whereOwnerId($value)
- * @method static Builder|Album whereParentId($value)
- * @method static Builder|Album wherePassword($value)
- * @method static Builder|Album wherePublic($value)
- * @method static Builder|Album whereTitle($value)
- * @method static Builder|Album whereUpdatedAt($value)
- * @method static Builder|Album whereVisibleHidden($value)
- * @method static Builder|Album whereSmart($value)
- * @mixin Eloquent
+ * @method static AlbumBuilder|Album query()                       Begin querying the model.
+ * @method static AlbumBuilder|Album with(array|string $relations) Begin querying the model with eager loading.
+ * @method        AlbumBuilder|Album newModelQuery()               Get a new, "pure" query builder for the model's table without any scopes, eager loading, etc.
+ * @method        AlbumBuilder|Album newQuery()                    Get a new query builder for the model's table.
  *
- * @property Collection|User[] $shared_with
+ * @property Collection<int,AccessPermission> $access_permissions
+ * @property int|null                         $access_permissions_count
+ * @property AccessPermission|null            $current_user_permissions
+ * @property AccessPermission|null            $public_permissions
+ * @property Collection<int,User>             $shared_with
+ * @property int|null                         $shared_with_count
+ *
+ * @method static AlbumBuilder|Album         addSelect($column)
+ * @method static NSCollection<int,  static> all($columns = ['*'])
+ * @method static AlbumBuilder|Album         ancestorsAndSelf($id, array $columns = [])
+ * @method static AlbumBuilder|Album         ancestorsOf($id, array $columns = [])
+ * @method static AlbumBuilder|Album         applyNestedSetScope(?string $table = null)
+ * @method static AlbumBuilder|Album         countErrors()
+ * @method static AlbumBuilder|Album         d()
+ * @method static AlbumBuilder|Album         defaultOrder(string $dir = 'asc')
+ * @method static AlbumBuilder|Album         descendantsAndSelf($id, array $columns = [])
+ * @method static AlbumBuilder|Album         descendantsOf($id, array $columns = [], $andSelf = false)
+ * @method static AlbumBuilder|Album         fixSubtree($root)
+ * @method static AlbumBuilder|Album         fixTree($root = null)
+ * @method static NSCollection<int,  static> get($columns = ['*'])
+ * @method static AlbumBuilder|Album         getNodeData($id, $required = false)
+ * @method static AlbumBuilder|Album         getPlainNodeData($id, $required = false)
+ * @method static AlbumBuilder|Album         getTotalErrors()
+ * @method static AlbumBuilder|Album         hasChildren()
+ * @method static AlbumBuilder|Album         hasParent()
+ * @method static AlbumBuilder|Album         isBroken()
+ * @method static AlbumBuilder|Album         join(string $table, string $first, string $operator = null, string $second = null, string $type = 'inner', string $where = false)
+ * @method static AlbumBuilder|Album         joinSub($query, $as, $first, $operator = null, $second = null, $type = 'inner', $where = false)
+ * @method static AlbumBuilder|Album         leaves(array $columns = [])
+ * @method static AlbumBuilder|Album         leftJoin(string $table, string $first, string $operator = null, string $second = null)
+ * @method static AlbumBuilder|Album         makeGap(int $cut, int $height)
+ * @method static AlbumBuilder|Album         moveNode($key, $position)
+ * @method static AlbumBuilder|Album         orWhereAncestorOf(bool $id, bool $andSelf = false)
+ * @method static AlbumBuilder|Album         orWhereDescendantOf($id)
+ * @method static AlbumBuilder|Album         orWhereNodeBetween($values)
+ * @method static AlbumBuilder|Album         orWhereNotDescendantOf($id)
+ * @method static AlbumBuilder|Album         orderBy($column, $direction = 'asc')
+ * @method static AlbumBuilder|Album         rebuildSubtree($root, array $data, $delete = false)
+ * @method static AlbumBuilder|Album         rebuildTree(array $data, $delete = false, $root = null)
+ * @method static AlbumBuilder|Album         reversed()
+ * @method static AlbumBuilder|Album         root(array $columns = [])
+ * @method static AlbumBuilder|Album         select($columns = [])
+ * @method static AlbumBuilder|Album         whereAncestorOf($id, $andSelf = false, $boolean = 'and')
+ * @method static AlbumBuilder|Album         whereAncestorOrSelf($id)
+ * @method static AlbumBuilder|Album         whereCoverId($value)
+ * @method static AlbumBuilder|Album         whereDescendantOf($id, $boolean = 'and', $not = false, $andSelf = false)
+ * @method static AlbumBuilder|Album         whereDescendantOrSelf(string $id, string $boolean = 'and', string $not = false)
+ * @method static AlbumBuilder|Album         whereId($value)
+ * @method static AlbumBuilder|Album         whereIn(string $column, string $values, string $boolean = 'and', string $not = false)
+ * @method static AlbumBuilder|Album         whereIsAfter($id, $boolean = 'and')
+ * @method static AlbumBuilder|Album         whereIsBefore($id, $boolean = 'and')
+ * @method static AlbumBuilder|Album         whereIsLeaf()
+ * @method static AlbumBuilder|Album         whereIsRoot()
+ * @method static AlbumBuilder|Album         whereLft($value)
+ * @method static AlbumBuilder|Album         whereLicense($value)
+ * @method static AlbumBuilder|Album         whereNodeBetween($values, $boolean = 'and', $not = false)
+ * @method static AlbumBuilder|Album         whereNotDescendantOf($id)
+ * @method static AlbumBuilder|Album         whereNotIn(string $column, string $values, string $boolean = 'and')
+ * @method static AlbumBuilder|Album         whereParentId($value)
+ * @method static AlbumBuilder|Album         whereRgt($value)
+ * @method static AlbumBuilder|Album         whereTrackShortPath($value)
+ * @method static AlbumBuilder|Album         withDepth(string $as = 'depth')
+ * @method static AlbumBuilder|Album         withoutRoot()
+ *
+ * // * @mixin \Eloquent
+ *
+ * @implements Node<Album>
  */
-class Album extends Model implements AlbumInterface
+class Album extends BaseAlbum implements Node
 {
+	/** @phpstan-use NodeTrait<Album> */
 	use NodeTrait;
-	use AlbumBooleans;
-	use AlbumStringify;
-	use AlbumGetters;
-	use AlbumCast;
-	use AlbumSetters;
-	use CustomSort;
-	use UTCBasedTimes;
+	use ToArrayThrowsNotImplemented;
+	/** @phpstan-use HasFactory<\Database\Factories\AlbumFactory> */
+	use HasFactory;
 
-	protected $casts
-	= [
-		'public' => 'int',
-		'nsfw' => 'int',
-		'viewable' => 'int',
-		'downloadable' => 'int',
-		'share_button_visible' => 'int',
-		'created_at' => 'datetime',
-		'updated_at' => 'datetime',
+	/**
+	 * The model's attributes.
+	 *
+	 * We must list all attributes explicitly here, otherwise the attributes
+	 * of a new model will accidentally be set on the parent class.
+	 * The trait {@link \App\Models\Extensions\ForwardsToParentImplementation}
+	 * only works properly, if it knows which attributes belong to the parent
+	 * class and which attributes belong to the child class.
+	 *
+	 * @var array<string, mixed>
+	 */
+	protected $attributes = [
+		'id' => null,
+		'parent_id' => null,
+		'album_timeline' => null,
+		'license' => 'none',
+		'cover_id' => null,
+		'header_id' => null,
+		'album_thumb_aspect_ratio' => null,
+		'_lft' => null,
+		'_rgt' => null,
+		'album_sorting_col' => null,
+		'album_sorting_order' => null,
+	];
+
+	/**
+	 * @var array<string, string>
+	 */
+	protected $casts = [
 		'min_taken_at' => 'datetime',
 		'max_taken_at' => 'datetime',
+		'num_children' => 'integer',
+		'num_photos' => 'integer',
+		'album_thumb_aspect_ratio' => AspectRatioType::class,
+		'album_timeline' => TimelineAlbumGranularity::class,
+		'_lft' => 'integer',
+		'_rgt' => 'integer',
 	];
 
 	/**
 	 * The relationships that should always be eagerly loaded by default.
 	 */
-	protected $with = ['owner', 'cover'];
+	protected $with = ['cover', 'cover.size_variants', 'thumb'];
 
 	/**
-	 * This method is called by the framework after the model has been
-	 * booted.
+	 * Return the relationship between this album and photos which are
+	 * direct children of this album.
 	 *
-	 * This method alters the default query builder for this model and
-	 * adds a "scope" to the query builder in order to add the "virtual"
-	 * columns `max_taken_at` and `min_taken_at` to every query.
+	 * @return HasManyChildPhotos
 	 */
-	protected static function booted()
+	public function photos(): HasManyChildPhotos // @phpstan-ignore-line
 	{
-		parent::booted();
-		// Normally "scopes" are used to restrict the result of the query
-		// to a particular subset through adding additional WHERE-clauses
-		// to the default query.
-		// However, "scopes" can be used to manipulate the query in any way.
-		// Here we add to additional "virtual" columns to the query.
-		static::addGlobalScope('add_minmax_taken_at', function (Builder $builder) {
-			$builder->addSelect([
-				'max_taken_at' => Photo::query()
-					->select('taken_at')
-					->leftJoin('albums as a', 'a.id', '=', 'album_id')
-					->whereColumn('a._lft', '>=', 'albums._lft')
-					->whereColumn('a._rgt', '<=', 'albums._rgt')
-					->whereNotNull('taken_at')
-					->orderBy('taken_at', 'desc')
-					->limit(1),
-				'min_taken_at' => Photo::query()
-					->select('taken_at')
-					->leftJoin('albums as a', 'a.id', '=', 'album_id')
-					->whereColumn('a._lft', '>=', 'albums._lft')
-					->whereColumn('a._rgt', '<=', 'albums._rgt')
-					->whereNotNull('taken_at')
-					->orderBy('taken_at', 'asc')
-					->limit(1),
-			]);
-		});
+		return new HasManyChildPhotos($this);
 	}
 
 	/**
-	 * Return the relationship between Photos and their Album.
+	 * Returns the relationship between this album and all photos incl.
+	 * photos which are recursive children of this album.
 	 *
-	 * @return HasMany
+	 * @return HasManyPhotosRecursively
 	 */
-	public function photos(): HasMany
+	public function all_photos(): HasManyPhotosRecursively
 	{
-		return $this->hasMany('App\Models\Photo', 'album_id', 'id');
+		return new HasManyPhotosRecursively($this);
+	}
+
+	public function thumb(): HasAlbumThumb
+	{
+		return new HasAlbumThumb($this);
 	}
 
 	/**
-	 * Return the relationship between an album and its owner.
+	 * Return the relationship between an album and its sub-albums.
 	 *
-	 * @return BelongsTo
+	 * @return HasManyChildAlbums
 	 */
-	public function owner(): BelongsTo
+	public function children(): HasManyChildAlbums
 	{
-		return $this->belongsTo('App\Models\User', 'owner_id', 'id');
+		return new HasManyChildAlbums($this);
 	}
 
 	/**
-	 * Return the relationship between an album and its sub albums.
+	 * Get query for descendants of the node.
 	 *
-	 * Note: Actually, the return type should be non-nullable.
-	 * However, {@link \App\SmartAlbums\BareSmartAlbum} extends this class and
-	 * {@link \App\SmartAlbums\SmartAlbum::children()} cannot return an
-	 * correctly instantiated object of `HasMany` but must return `null`,
-	 * because a `SmartAlbum` is not a real Eloquent model and does not exist
-	 * as a database entity.
-	 * TODO: Refactor the inheritance relationships of all album types.
-	 * A `SmartAlbum` (which cannot have sub-albums} should not inherit from
-	 * `Album`.
-	 * Instead both kind of albums should share an interface.
-	 * Then the return type of this method could be repaired.
+	 * @return DescendantsRelation<Album>
 	 *
-	 * @return ?HasMany
+	 * @throws QueryBuilderException
 	 */
-	public function children(): ?HasMany
+	public function descendants(): DescendantsRelation
 	{
-		return $this->hasMany('App\Models\Album', 'parent_id', 'id');
+		try {
+			/** @var DescendantsRelation<Album> */
+			return new DescendantsRelation($this->newQuery(), $this);
+			// @codeCoverageIgnoreStart
+		} catch (\Throwable $e) {
+			throw new QueryBuilderException($e);
+		}
+		// @codeCoverageIgnoreEnd
 	}
 
 	/**
 	 * Return the relationship between an album and its cover.
 	 *
-	 * @return HasOne
+	 * @return HasOne<Photo,$this>
 	 */
 	public function cover(): HasOne
 	{
-		return $this->hasOne('App\Models\Photo', 'id', 'cover_id');
+		return $this->hasOne(Photo::class, 'id', 'cover_id');
 	}
 
 	/**
-	 * Return the relationship between an album and its parent.
+	 * Return the relationship between an album and its header.
 	 *
-	 * @return BelongsTo
+	 * @return HasOne<Photo,$this>
 	 */
-	public function parent(): BelongsTo
+	public function header(): HasOne
 	{
-		return $this->belongsTo('App\Models\Album', 'parent_id', 'id');
+		return $this->hasOne(Photo::class, 'id', 'header_id');
 	}
 
 	/**
-	 * @return BelongsToMany
-	 */
-	public function shared_with(): BelongsToMany
-	{
-		return $this->belongsToMany(
-			'App\Models\User',
-			'user_album',
-			'album_id',
-			'user_id'
-		);
-	}
-
-	/**
-	 * Before calling delete() to remove the album from the database
-	 * we need to go through each sub album and delete it.
-	 * Idem we also delete each pictures inside an album (recursively).
+	 * Return the License used by the album.
 	 *
-	 * @return bool|null
+	 * @param string|LicenseType|null $value
 	 *
-	 * @throws Exception
+	 * @return LicenseType
+	 *
+	 * @throws ConfigurationKeyMissingException
 	 */
-	public function predelete()
+	protected function getLicenseAttribute(string|LicenseType|null $value): LicenseType
 	{
-		$no_error = true;
-		$photos = $this->get_all_photos()->get();
-		foreach ($photos as $photo) {
-			$no_error &= $photo->predelete();
-			$no_error &= $photo->delete();
+		if ($value === null || $value === 'none' || $value === LicenseType::NONE) {
+			return Configs::getValueAsEnum('default_license', LicenseType::class);
 		}
 
-		return $no_error;
-	}
-
-	/**
-	 * Return the full path of the album consisting of all its parents' titles.
-	 *
-	 * @return string
-	 */
-	public static function getFullPath($album)
-	{
-		$title = [$album->title];
-		$parentId = $album->parent_id;
-		while ($parentId) {
-			$parent = Album::find($parentId);
-			array_unshift($title, $parent->title);
-			$parentId = $parent->parent_id;
+		if (is_string($value)) {
+			return LicenseType::from($value);
 		}
 
-		return implode('/', $title);
+		return $value;
 	}
 
 	/**
-	 * Setter/Mutator for attribute `min_taken_at`.
+	 * {@inheritDoc}
 	 *
-	 * Actually, this method should be a no-op and throw an exception.
-	 * The attribute `min_taken_at` is a transient attribute of the model
-	 * and cannot be persisted to database.
-	 * It is calculated by the DB back-end upon fetching the model.
-	 * Hence, it wrong to try to set this attribute.
-	 * However, {@link AlbumCast::toTagAlbum()} does it nonetheless, so we
-	 * don't throw an exception until that method is fixed.
-	 *
-	 * TODO: Fix {@link AlbumCast::toTagAlbum()}.
-	 *
-	 * @param Carbon|null $value
+	 * @throws ModelDBException
+	 * @throws MediaFileOperationException
 	 */
-	protected function setMinTakenAtAttribute(?Carbon $value): void
+	public function performDeleteOnModel(): void
 	{
-		// Uncomment the following line, after AlbumCast::toTagAlbum() has been fixed
-		//throw new \BadMethodCallException('Attribute "min_taken_at" must not be set as it is a virtual attribute');
+		$fileDeleter = (new Delete())->do([$this->id]);
+		$this->exists = false;
+		$fileDeleter->do();
 	}
 
 	/**
-	 * Setter/Mutator for attribute `max_taken_at`.
+	 * This method is a no-op.
 	 *
-	 * Actually, this method should be a no-op and throw an exception.
-	 * The attribute `max_taken_at` is a transient attribute of the model
-	 * and cannot be persisted to database.
-	 * It is calculated by the DB back-end upon fetching the model.
-	 * Hence, it wrong to try to set this attribute.
-	 * However, {@link AlbumCast::toTagAlbum()} does it nonetheless, so we
-	 * don't throw an exception until that method is fixed.
+	 * This method is originally defined by {@link NodeTrait::deleteDescendants()}
+	 * and called as part of the event listener for the 'deleting' event.
+	 * The event listener is installed by {@link NodeTrait::bootNodeTrait()}.
 	 *
-	 * TODO: Fix {@link AlbumCast::toTagAlbum()}.
+	 * For efficiency reasons all descendants are deleted by
+	 * {@link Delete::do()}.
+	 * Hence, we must avoid any attempt to delete the descendants twice.
 	 *
-	 * @param Carbon|null $value
+	 * @return void
+	 *
+	 * @codeCoverageIgnore
 	 */
-	protected function setMaxTakenAtAttribute(?Carbon $value): void
+	protected function deleteDescendants(): void
 	{
-		// Uncomment the following line, after AlbumCast::toTagAlbum() has been fixed
-		//throw new \BadMethodCallException('Attribute "max_taken_at" must not be set as it is a virtual attribute');
+		// deliberately a no op
+	}
+
+	/**
+	 * Sets the ownership of all child albums and child photos to the owner
+	 * of this album.
+	 *
+	 * ANSI SQL does not allow a `JOIN`-clause in the table reference
+	 * of `UPDATE` statements.
+	 * MySQL and PostgreSQL have their proprietary but different
+	 * extension for that, SQLite does not support it at all.
+	 * Hence, we must use a (slightly) less efficient, but
+	 * SQL-compatible `WHERE EXIST` condition instead of a `JOIN`.
+	 * This also means that we cannot use the succinct statements
+	 *
+	 *     $this->descendants()->update(['owner_id' => $this->owner_id])
+	 *     $this->all_photos()->update(['owner_id' => $this->owner_id])
+	 *
+	 * because these method return queries which use `JOINS`.
+	 * So, we need to build the queries from scratch.
+	 *
+	 * @return void
+	 */
+	public function fixOwnershipOfChildren(): void
+	{
+		$this->refreshNode();
+		$lft = $this->_lft;
+		$rgt = $this->_rgt;
+
+		BaseAlbumImpl::query()
+			->whereExists(function (BaseBuilder $q) use ($lft, $rgt) {
+				$q
+					->from('albums')
+					->whereColumn('base_albums.id', '=', 'albums.id')
+					->whereBetween('albums._lft', [$lft + 1, $rgt - 1]);
+			})
+			->update(['owner_id' => $this->owner_id]);
+		Photo::query()
+			->whereExists(function (BaseBuilder $q) use ($lft, $rgt) {
+				$q
+					->from('albums')
+					->whereColumn('photos.album_id', '=', 'albums.id')
+					->whereBetween('albums._lft', [$lft, $rgt]);
+			})
+			->update(['owner_id' => $this->owner_id]);
+	}
+
+	/**
+	 * Create a new Eloquent query builder for the model.
+	 *
+	 * @param BaseBuilder $query
+	 *
+	 * @return AlbumBuilder
+	 */
+	public function newEloquentBuilder($query): AlbumBuilder
+	{
+		return new AlbumBuilder($query);
+	}
+
+	/**
+	 * Defines accessor for the Aspect Ratio.
+	 *
+	 * @return AspectRatioType|null
+	 */
+	protected function getAlbumThumbAspectRatioAttribute(): ?AspectRatioType
+	{
+		return AspectRatioType::tryFrom($this->attributes['album_thumb_aspect_ratio'] ?? '1/1');
+	}
+
+	/**
+	 * Defines setter for Aspect Ratio.
+	 *
+	 * @param AspectRatioType|null $aspectRatio
+	 *
+	 * @return void
+	 */
+	protected function setAlbumThumbAspectRatioAttribute(?AspectRatioType $aspectRatio): void
+	{
+		$this->attributes['album_thumb_aspect_ratio'] = $aspectRatio?->value;
+	}
+
+	/**
+	 * Defines accessor for the Album Timeline.
+	 *
+	 * @return TimelineAlbumGranularity|null
+	 */
+	protected function getAlbumTimelineAttribute(): ?TimelineAlbumGranularity
+	{
+		return TimelineAlbumGranularity::tryFrom($this->attributes['album_timeline']);
+	}
+
+	/**
+	 * Defines setter for Album Timeline.
+	 *
+	 * @param TimelineAlbumGranularity|null $album_timeline
+	 *
+	 * @return void
+	 */
+	protected function setAlbumTimelineAttribute(?TimelineAlbumGranularity $album_timeline): void
+	{
+		$this->attributes['album_timeline'] = $album_timeline?->value;
+	}
+
+	/**
+	 * Accessor for the "virtual" attribute {@link Album::$track_url}.
+	 *
+	 * This is a convenient method which wraps
+	 * {@link Album::$track_short_path} into
+	 * {@link \Illuminate\Support\Facades\Storage::url()}.
+	 *
+	 * @return string|null the url of the track
+	 */
+	public function getTrackUrlAttribute(): ?string
+	{
+		return $this->track_short_path !== null && $this->track_short_path !== '' ?
+			Storage::url($this->track_short_path) : null;
+	}
+
+	/**
+	 * Set the GPX track for the album.
+	 *
+	 * @param UploadedFile $file the GPX track file to be set
+	 *
+	 * @return void
+	 *
+	 * @throws ModelDBException
+	 * @throws MediaFileOperationException
+	 *
+	 * @codeCoverageIgnore tested Locally
+	 */
+	public function setTrack(UploadedFile $file): void
+	{
+		try {
+			if ($this->track_short_path !== null) {
+				Storage::delete($this->track_short_path);
+			}
+
+			$new_track_name = strtr(base64_encode(random_bytes(18)), '+/', '-_') . '.xml';
+			Storage::putFileAs('tracks/', $file, $new_track_name);
+			$this->track_short_path = 'tracks/' . $new_track_name;
+			$this->save();
+		} catch (ModelDBException $e) {
+			throw $e;
+		} catch (\Exception $e) {
+			throw new MediaFileOperationException('Could not save track file', $e);
+		}
+	}
+
+	/**
+	 * Delete the track of the album.
+	 *
+	 * @return void
+	 *
+	 * @throws ModelDBException
+	 *
+	 * @codeCoverageIgnore tested Locally
+	 */
+	public function deleteTrack(): void
+	{
+		if ($this->track_short_path === null) {
+			return;
+		}
+		Storage::delete($this->track_short_path);
+		$this->track_short_path = null;
+		$this->save();
+	}
+
+	protected function getAlbumSortingAttribute(): ?AlbumSortingCriterion
+	{
+		$sortingColumn = $this->attributes['album_sorting_col'];
+		$sortingOrder = $this->attributes['album_sorting_order'];
+
+		return ($sortingColumn === null || $sortingOrder === null) ?
+			null :
+			new AlbumSortingCriterion(
+				ColumnSortingType::from($sortingColumn),
+				OrderSortingType::from($sortingOrder));
+	}
+
+	protected function setAlbumSortingAttribute(?AlbumSortingCriterion $sorting): void
+	{
+		$this->attributes['album_sorting_col'] = $sorting?->column->value;
+		$this->attributes['album_sorting_order'] = $sorting?->order->value;
+	}
+
+	/**
+	 * Returns the criterion acc. to which **albums** inside the album shall be sorted.
+	 *
+	 * @return AlbumSortingCriterion
+	 */
+	public function getEffectiveAlbumSorting(): AlbumSortingCriterion
+	{
+		return $this->getAlbumSortingAttribute() ?? AlbumSortingCriterion::createDefault();
 	}
 }

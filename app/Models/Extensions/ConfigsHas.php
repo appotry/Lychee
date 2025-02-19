@@ -1,100 +1,117 @@
 <?php
 
+/**
+ * SPDX-License-Identifier: MIT
+ * Copyright (c) 2017-2018 Tobias Reich
+ * Copyright (c) 2018-2025 LycheeOrg.
+ */
+
 namespace App\Models\Extensions;
 
-use App\Models\Logs;
-use Exception;
+use App\Exceptions\ExternalComponentMissingException;
+use App\Exceptions\Handler;
+use App\Exceptions\Internal\InvalidConfigOption;
+use App\Exceptions\Internal\QueryBuilderException;
+use App\Facades\Helpers;
+use function Safe\exec;
 
 trait ConfigsHas
 {
 	/**
 	 * @return bool returns the Imagick setting
 	 */
-	public static function hasImagick()
+	public static function hasImagick(): bool
 	{
-		if ((bool) (extension_loaded('imagick') && self::get_value('imagick', '1') == '1')) {
-			return true;
-		}
-		try {
-			Logs::notice(__METHOD__, __LINE__, 'hasImagick : false');
-		} catch (Exception $e) {
-			//do nothing
-		}
-
-		return false;
+		return
+			extension_loaded('imagick') &&
+			self::getValueAsBool('imagick');
 	}
 
 	/**
 	 * @return bool returns the Exiftool setting
 	 */
-	public static function hasExiftool()
+	public static function hasExiftool(): bool
 	{
 		// has_exiftool has the following values:
 		// 0: No Exiftool
 		// 1: Exiftool is available
 		// 2: Not yet tested if exiftool is available
 
-		$has_exiftool = intval(self::get_value('has_exiftool'));
+		$has_exiftool = self::getValueAsInt('has_exiftool');
 
 		// value not yet set -> let's see if exiftool is available
-		if ($has_exiftool == 2) {
-			try {
-				$path = exec('command -v exiftool');
-				if ($path == '') {
-					self::set('has_exiftool', 0);
-					$has_exiftool = false;
-				} else {
-					self::set('has_exiftool', 1);
-					$has_exiftool = true;
+		if ($has_exiftool === 2) {
+			if (Helpers::isExecAvailable()) {
+				try {
+					$cmd_output = exec('command -v exiftool');
+					// @codeCoverageIgnoreStart
+				} catch (\Exception $e) {
+					$cmd_output = false;
+					Handler::reportSafely(new ExternalComponentMissingException('could not find exiftool; `has_exiftool` will be set to 0', $e));
 				}
-			} catch (Exception $e) {
-				self::set('has_exiftool', 0);
-				$has_exiftool = false;
-				Logs::warning(__METHOD__, __LINE__, 'exec is disabled, has_exiftool has been set to 0.');
+				// @codeCoverageIgnoreEnd
+				$path = $cmd_output === false ? '' : $cmd_output;
+				$has_exiftool = $path === '' ? 0 : 1;
+			} else {
+				// @codeCoverageIgnoreStart
+				$has_exiftool = 0;
+				// @codeCoverageIgnoreEnd
 			}
-		} elseif ($has_exiftool == 1) {
-			$has_exiftool = true;
-		} else {
-			$has_exiftool = false;
+
+			try {
+				self::set('has_exiftool', $has_exiftool);
+				// @codeCoverageIgnoreStart
+			} catch (InvalidConfigOption|QueryBuilderException $e) {
+				// If we could not save the detected setting, still proceed
+				Handler::reportSafely($e);
+			}
+			// @codeCoverageIgnoreEnd
 		}
 
-		return $has_exiftool;
+		return $has_exiftool === 1;
 	}
 
 	/**
-	 * @return bool returns the Exiftool setting
+	 * @return bool returns the FFMpeg setting
 	 */
-	public static function hasFFmpeg()
+	public static function hasFFmpeg(): bool
 	{
 		// has_ffmpeg has the following values:
 		// 0: No ffmpeg
 		// 1: ffmpeg is available
 		// 2: Not yet tested if ffmpeg is available
 
-		$has_ffmpeg = intval(self::get_value('has_ffmpeg'));
+		$has_ffmpeg = self::getValueAsInt('has_ffmpeg');
 
 		// value not yet set -> let's see if ffmpeg is available
-		if ($has_ffmpeg == 2) {
-			try {
-				$path = exec('command -v ffmpeg');
-				if ($path == '') {
-					self::set('has_ffmpeg', 0);
-					$has_ffmpeg = false;
-				} else {
-					self::set('has_ffmpeg', 1);
-					$has_ffmpeg = true;
+		if ($has_ffmpeg === 2) {
+			if (Helpers::isExecAvailable()) {
+				try {
+					$cmd_output = exec('command -v ffmpeg');
+					// @codeCoverageIgnoreStart
+				} catch (\Exception $e) {
+					$cmd_output = false;
+					Handler::reportSafely(new ExternalComponentMissingException('could not find ffmpeg; `has_ffmpeg` will be set to 0', $e));
 				}
-			} catch (Exception $e) {
-				self::set('has_ffmpeg', 0);
-				$has_ffmpeg = false;
-				Logs::warning(__METHOD__, __LINE__, 'exec is disabled, set_ffmpeg has been set to 0.');
+				// @codeCoverageIgnoreEnd
+				$path = $cmd_output === false ? '' : $cmd_output;
+				$has_ffmpeg = $path === '' ? 0 : 1;
+			} else {
+				// @codeCoverageIgnoreStart
+				$has_ffmpeg = 0;
+				// @codeCoverageIgnoreEnd
 			}
-		} elseif ($has_ffmpeg == 1) {
-			$has_ffmpeg = true;
-		} else {
-			$has_ffmpeg = false;
+
+			try {
+				self::set('has_ffmpeg', $has_ffmpeg);
+				// @codeCoverageIgnoreStart
+			} catch (InvalidConfigOption|QueryBuilderException $e) {
+				// If we could not save the detected setting, still proceed
+				Handler::reportSafely($e);
+			}
+			// @codeCoverageIgnoreEnd
 		}
 
-		return $has_ffmpeg;
+		return $has_ffmpeg === 1;
 	}
 }

@@ -1,13 +1,29 @@
 <?php
 
+/**
+ * SPDX-License-Identifier: MIT
+ * Copyright (c) 2017-2018 Tobias Reich
+ * Copyright (c) 2018-2025 LycheeOrg.
+ */
+
 namespace App\Models;
 
-use App\Facades\Helpers;
+use App\Enum\ConfigType;
+use App\Enum\LicenseType;
+use App\Enum\MapProviders;
+use App\Exceptions\ConfigurationKeyMissingException;
+use App\Exceptions\Internal\InvalidConfigOption;
+use App\Exceptions\Internal\LycheeAssertionError;
+use App\Exceptions\Internal\QueryBuilderException;
+use App\Exceptions\ModelDBException;
+use App\Exceptions\UnexpectedException;
+use App\Models\Builders\ConfigsBuilder;
 use App\Models\Extensions\ConfigsHas;
-use Exception;
-use Illuminate\Database\Eloquent\Builder;
+use App\Models\Extensions\ThrowsConsistentExceptions;
+use BackedEnum;
 use Illuminate\Database\Eloquent\Model;
-use Illuminate\Database\QueryException;
+use Illuminate\Database\Eloquent\ModelNotFoundException;
+use Illuminate\Support\Facades\Log;
 
 /**
  * App\Configs.
@@ -17,100 +33,123 @@ use Illuminate\Database\QueryException;
  * @property string|null $value
  * @property string      $cat
  * @property string      $type_range
- * @property int         $confidentiality
+ * @property bool        $is_secret
  * @property string      $description
+ * @property string      $details
+ * @property int         $level
  *
- * @method static Builder|Configs admin()
- * @method static Builder|Configs info()
- * @method static Builder|Configs newModelQuery()
- * @method static Builder|Configs newQuery()
- * @method static Builder|Configs public ()
- * @method static Builder|Configs query()
- * @method static Builder|Configs whereCat($value)
- * @method static Builder|Configs whereConfidentiality($value)
- * @method static Builder|Configs whereId($value)
- * @method static Builder|Configs whereKey($value)
- * @method static Builder|Configs whereValue($value)
- * @mixin Eloquent
+ * @method static ConfigsBuilder|Configs addSelect($column)
+ * @method static ConfigsBuilder|Configs join(string $table, string $first, string $operator = null, string $second = null, string $type = 'inner', string $where = false)
+ * @method static ConfigsBuilder|Configs joinSub($query, $as, $first, $operator = null, $second = null, $type = 'inner', $where = false)
+ * @method static ConfigsBuilder|Configs leftJoin(string $table, string $first, string $operator = null, string $second = null)
+ * @method static ConfigsBuilder|Configs newModelQuery()
+ * @method static ConfigsBuilder|Configs newQuery()
+ * @method static ConfigsBuilder|Configs orderBy($column, $direction = 'asc')
+ * @method static ConfigsBuilder|Configs query()
+ * @method static ConfigsBuilder|Configs select($columns = [])
+ * @method static ConfigsBuilder|Configs whereCat($value)
+ * @method static ConfigsBuilder|Configs whereConfidentiality($value)
+ * @method static ConfigsBuilder|Configs whereDescription($value)
+ * @method static ConfigsBuilder|Configs whereId($value)
+ * @method static ConfigsBuilder|Configs whereIn(string $column, string $values, string $boolean = 'and', string $not = false)
+ * @method static ConfigsBuilder|Configs whereKey($value)
+ * @method static ConfigsBuilder|Configs whereNotIn(string $column, string $values, string $boolean = 'and')
+ * @method static ConfigsBuilder|Configs whereTypeRange($value)
+ * @method static ConfigsBuilder|Configs whereValue($value)
+ *
+ * @mixin \Eloquent
  */
 class Configs extends Model
 {
 	use ConfigsHas;
+	use ThrowsConsistentExceptions;
 
 	/**
 	 * The attributes that are mass assignable.
 	 *
-	 * @var array
+	 * @var array<int,string>
 	 */
-	protected $fillable = ['key', 'value', 'cat', 'type_range', 'confidentiality', 'description'];
+	protected $fillable = ['key', 'value', 'cat', 'type_range', 'is_secret', 'description', 'level'];
 
 	/**
 	 *  this is a parameter for Laravel to indicate that there is no created_at, updated_at columns.
 	 */
 	public $timestamps = false;
 
-	/** We define this as a singleton */
-	private static $cache = null;
+	/**
+	 * We define this as a singleton.
+	 *
+	 * @var array<string, int|bool|string|null>
+	 */
+	private static array $cache = [];
+
+	/**
+	 * @param $query
+	 *
+	 * @return ConfigsBuilder
+	 */
+	public function newEloquentBuilder($query): ConfigsBuilder
+	{
+		return new ConfigsBuilder($query);
+	}
 
 	/**
 	 * Sanity check.
 	 *
-	 * @param $value
+	 * @param string|null $candidateValue
+	 * @param string|null $message_template
 	 *
 	 * @return string
 	 */
-	public function sanity($value)
+	public function sanity(?string $candidateValue, ?string $message_template = null): string
 	{
-		if (!defined('INT')) {
-			define('INT', 'int');
-			define('STRING', 'string');
-			define('STRING_REQ', 'string_required');
-			define('BOOL', '0|1');
-			define('TERNARY', '0|1|2');
-			define('DISABLED', '');
-			define('LICENSE', 'license');
-		}
-
 		$message = '';
-		$val_range = [BOOL => explode('|', BOOL), TERNARY => explode('|', TERNARY)];
+		$val_range = [
+			ConfigType::BOOL->value => explode('|', ConfigType::BOOL->value),
+			ConfigType::TERNARY->value => explode('|', ConfigType::TERNARY->value),
+		];
 
+		$message_template ??= 'Error: Wrong property for ' . $this->key . ', expected %s, got ' . ($candidateValue ?? 'NULL') . '.';
 		switch ($this->type_range) {
-			case STRING:
-			case DISABLED:
+			case ConfigType::STRING->value:
+			case ConfigType::DISABLED->value:
 				break;
-			case STRING_REQ:
-				if ($value == '') {
-					$message = 'Error: ' . $this->key . ' empty or not set in database';
+			case ConfigType::STRING_REQ->value:
+				if ($candidateValue === '' || $candidateValue === null) {
+					$message = 'Error: ' . $this->key . ' empty or not set';
 				}
 				break;
-			case INT:
+			case ConfigType::INT->value:
 				// we make sure that we only have digits in the chosen value.
-				if (!ctype_digit(strval($value))) {
-					$message = 'Error: Wrong property for ' . $this->key . ' in database, expected positive integer.';
+				if (!ctype_digit(strval($candidateValue))) {
+					$message = sprintf($message_template, 'positive integer or 0');
 				}
 				break;
-			case BOOL:
-			case TERNARY:
-				if (!in_array($value, $val_range[$this->type_range])) { // BOOL or TERNARY
-					$message = 'Error: Wrong property for ' . $this->key
-						. ' in database, expected ' . implode(
-							' or ',
-							$val_range[$this->type_range]
-						) . ', got ' . ($value ? $value : 'NULL');
+			case ConfigType::POSTIIVE->value:
+				if (!ctype_digit(strval($candidateValue)) || intval($candidateValue, 10) === 0) {
+					$message = sprintf($message_template, 'strictly positive integer');
 				}
 				break;
-			case LICENSE:
-				if (!in_array($value, Helpers::get_all_licenses())) {
-					$message = 'Error: Wrong property for ' . $this->key
-						. ' in database, expected a valide license, got ' . ($value ? $value : 'NULL');
+			case ConfigType::BOOL->value:
+			case ConfigType::TERNARY->value:
+				if (!in_array($candidateValue, $val_range[$this->type_range], true)) { // BOOL or TERNARY
+					$message = sprintf($message_template, implode(' or ', $val_range[$this->type_range]));
+				}
+				break;
+			case ConfigType::LICENSE->value:
+				if (LicenseType::tryFrom($candidateValue) === null) {
+					$message = sprintf($message_template, 'a valid license');
+				}
+				break;
+			case ConfigType::MAP_PROVIDER->value:
+				if (MapProviders::tryFrom($candidateValue) === null) {
+					$message = sprintf($message_template, 'a valid map provider');
 				}
 				break;
 			default:
 				$values = explode('|', $this->type_range);
-				if (!in_array($value, $values)) {
-					$message = 'Error: Wrong property for ' . $this->key
-						. ' in database, expected ' . implode(' or ', $values)
-						. ', got ' . ($value ? $value : 'NULL');
+				if (!in_array($candidateValue, $values, true)) {
+					$message = sprintf($message_template, implode(' or ', $values));
 				}
 				break;
 		}
@@ -121,157 +160,177 @@ class Configs extends Model
 	/**
 	 * Cache and return the current settings of this Lychee installation.
 	 *
-	 * @return array
+	 * @return array<string, mixed>
 	 */
-	public static function get()
+	public static function get(): array
 	{
-		if (self::$cache) {
+		if (count(self::$cache) > 0) {
 			return self::$cache;
 		}
 
 		try {
-			$query = Configs::select([
-				'key',
-				'value',
-			]);
-			$return = $query->pluck('value', 'key')->all();
-
-			$return['sorting_Photos'] = 'ORDER BY ' . $return['sorting_Photos_col'] . ' ' . $return['sorting_Photos_order'];
-			$return['sorting_Albums'] = 'ORDER BY ' . $return['sorting_Albums_col'] . ' ' . $return['sorting_Albums_order'];
-
-			self::$cache = $return;
-		} catch (Exception $e) {
-			self::$cache = null;
-
-			return null;
+			self::$cache = Configs::query()
+				->select(['key', 'value'])
+				->pluck('value', 'key')
+				->all();
+			// @codeCoverageIgnoreStart
+		} catch (\Throwable) {
+			self::$cache = [];
 		}
+		// @codeCoverageIgnoreEnd
 
-		return $return;
+		return self::$cache;
 	}
 
 	/**
 	 * The best way to request a value from the config...
 	 *
 	 * @param string $key
-	 * @param mixed  $default
 	 *
-	 * @return int|bool|string
+	 * @return int|bool|string|null
+	 *
+	 * @throws ConfigurationKeyMissingException if a key does not exist
 	 */
-	public static function get_value(string $key, $default = null)
+	public static function getValue(string $key): int|bool|string|null
 	{
-		if (!self::$cache) {
-			/*
-			 * try is here because when composer does the package discovery it
-			 * looks at AppServiceProvider which register a singleton with:
-			 * $compressionQuality = Configs::get_value('compression_quality', 90);
-			 *
-			 * this will fail for sure as the config table does not exist yet
-			 */
-			try {
-				self::get();
-			} catch (QueryException $e) {
-				return $default;
-			}
+		if (count(self::$cache) === 0) {
+			self::get();
 		}
 
-		if (!isset(self::$cache[$key])) {
+		if (!array_key_exists($key, self::$cache)) {
 			/*
 			 * For some reason the $default is not returned above...
 			 */
-			try {
-				Logs::notice(__METHOD__, __LINE__, $key . ' does not exist in config (local) !');
-			} catch (Exception $e) {
-				// yeah we do nothing because we cannot do anything in that case ...  :p
-			}
+			// @codeCoverageIgnoreStart
+			Log::critical(__METHOD__ . ':' . __LINE__ . ' ' . $key . ' does not exist in config (local) !');
 
-			return $default;
+			throw new ConfigurationKeyMissingException($key . ' does not exist in config!');
+			// @codeCoverageIgnoreEnd
 		}
 
 		return self::$cache[$key];
 	}
 
 	/**
+	 * Get string configuration value.
+	 *
+	 * @param string $key
+	 *
+	 * @return string
+	 *
+	 * @throws ConfigurationKeyMissingException
+	 */
+	public static function getValueAsString(string $key): string
+	{
+		return strval(self::getValue($key));
+	}
+
+	/**
+	 * Get string configuration value.
+	 *
+	 * @param string $key
+	 *
+	 * @return int
+	 *
+	 * @throws ConfigurationKeyMissingException
+	 */
+	public static function getValueAsInt(string $key): int
+	{
+		return intval(self::getValue($key));
+	}
+
+	/**
+	 * Get bool configuration value.
+	 *
+	 * @param string $key
+	 *
+	 * @return bool
+	 *
+	 * @throws ConfigurationKeyMissingException
+	 */
+	public static function getValueAsBool(string $key): bool
+	{
+		return self::getValue($key) === '1';
+	}
+
+	/**
+	 * @template T of BackedEnum
+	 *
+	 * @param string          $key
+	 * @param class-string<T> $type
+	 *
+	 * @return T|null
+	 */
+	public static function getValueAsEnum(string $key, string $type): \BackedEnum|null
+	{
+		if (!function_exists('enum_exists') || !enum_exists($type) || !method_exists($type, 'tryFrom')) {
+			// @codeCoverageIgnoreStart
+			throw new UnexpectedException();
+			// @codeCoverageIgnoreEnd
+		}
+
+		return $type::tryFrom(self::getValue($key));
+	}
+
+	/**
 	 * Update Lychee configuration
 	 * Note that we must invalidate the cache now.
 	 *
-	 * @param string $key
-	 * @param $value
+	 * @param string          $key
+	 * @param string|int|bool $value
 	 *
-	 * @return bool returns true when successful
+	 * @return void
+	 *
+	 * @throws InvalidConfigOption
+	 * @throws QueryBuilderException
 	 */
-	public static function set(string $key, $value)
+	public static function set(string $key, string|int|bool|\BackedEnum $value): void
 	{
-		$config = Configs::where('key', '=', $key)->first();
-
-		// first() may return null, fixup 'Creating default object from empty value' error
-		// we also log a warning
-		if ($config == null) {
-			Logs::warning(__METHOD__, __LINE__, 'key ' . $key . ' not found!');
-
-			return true;
-		}
-
-		/**
-		 * Sanity check. :).
-		 */
-		$message = $config->sanity($value);
-		if ($message != '') {
-			Logs::error(__METHOD__, __LINE__, $message);
-
-			return false;
-		}
-
-		$config->value = $value;
-
 		try {
+			/** @var Configs $config */
+			$config = Configs::query()
+				->where('key', '=', $key)
+				->firstOrFail();
+
+			// For BackEnm we take the value. In theory this is no longer necessary because we enforce at the column type.
+			if ($value instanceof \BackedEnum) {
+				$value = $value->value;
+			}
+
+			$strValue = match (gettype($value)) {
+				'boolean' => $value === true ? '1' : '0',
+				'integer', 'string' => strval($value),
+				// @codeCoverageIgnoreStart
+				default => throw new LycheeAssertionError('Unexpected type'),
+				// @codeCoverageIgnoreEnd
+			};
+
+			/**
+			 * Sanity check. :).
+			 */
+			$message = $config->sanity($strValue);
+			if ($message !== '') {
+				throw new InvalidConfigOption($message);
+			}
+			$config->value = $strValue;
 			$config->save();
-		} catch (Exception $e) {
-			Logs::error(__METHOD__, __LINE__, $e->getMessage());
-
-			return false;
+			// @codeCoverageIgnoreStart
+		} catch (ModelNotFoundException $e) {
+			throw new InvalidConfigOption('key ' . $key . ' not found!', $e);
+		} catch (ModelDBException $e) {
+			throw new InvalidConfigOption('Could not save configuration', $e);
+			// @codeCoverageIgnoreEnd
+		} finally {
+			// invalidate cache.
+			self::$cache = [];
 		}
-
-		// invalidate cache.
-		self::$cache = null;
-
-		return true;
 	}
 
 	/**
-	 * Define scopes.
+	 * Reset the cache.
 	 */
-
-	/**
-	 * @param $query
-	 *
-	 * @return mixed
-	 */
-	public function scopePublic(Builder $query)
+	public static function invalidateCache(): void
 	{
-		return $query->where('confidentiality', '=', 0);
-	}
-
-	/**
-	 * Logged user can see.
-	 *
-	 * @param $query
-	 *
-	 * @return mixed
-	 */
-	public function scopeInfo(Builder $query)
-	{
-		return $query->where('confidentiality', '<=', 2);
-	}
-
-	/**
-	 * Only admin can see.
-	 *
-	 * @param $query
-	 *
-	 * @return mixed
-	 */
-	public function scopeAdmin(Builder $query)
-	{
-		return $query->where('confidentiality', '<=', 3);
+		self::$cache = [];
 	}
 }

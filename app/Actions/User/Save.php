@@ -1,26 +1,62 @@
 <?php
 
+/**
+ * SPDX-License-Identifier: MIT
+ * Copyright (c) 2017-2018 Tobias Reich
+ * Copyright (c) 2018-2025 LycheeOrg.
+ */
+
 namespace App\Actions\User;
 
-use App\Exceptions\JsonError;
+use App\Exceptions\ConflictingPropertyException;
+use App\Exceptions\InvalidPropertyException;
+use App\Exceptions\ModelDBException;
 use App\Models\User;
+use Illuminate\Support\Facades\Hash;
 
 class Save
 {
-	public function do(User $user, array $data): bool
-	{
-		if (User::where('username', '=', $data['username'])->where('id', '!=', $data['id'])->count()) {
-			throw new JsonError('username must be unique');
+	/**
+	 * @param User        $user
+	 * @param string      $username
+	 * @param string|null $password           see {@link HasPasswordTrait::password()} for the difference between the values `''` and `null`
+	 * @param bool        $mayUpload
+	 * @param bool        $mayEditOwnSettings
+	 *
+	 * @return void
+	 *
+	 * @throws InvalidPropertyException
+	 * @throws ModelDBException
+	 */
+	public function do(User $user,
+		string $username,
+		?string $password,
+		bool $mayUpload,
+		bool $mayEditOwnSettings,
+		?int $quota_kb = null,
+		?string $note = null,
+	): void {
+		if (User::query()
+			->where('username', '=', $username)
+			->where('id', '!=', $user->id)
+			->count() !== 0
+		) {
+			throw new ConflictingPropertyException('Username already exists');
 		}
 
-		// check for duplicate name here !
-		$user->username = $data['username'];
-		$user->upload = ($data['upload'] == '1');
-		$user->lock = ($data['lock'] == '1');
-		if (isset($data['password'])) {
-			$user->password = bcrypt($data['password']);
+		if ($quota_kb === 0) {
+			$default = \Configs::getValueAsInt('default_user_quota');
+			$quota_kb = $default === 0 ? null : $default;
 		}
 
-		return $user->save();
+		$user->username = $username;
+		$user->may_upload = $mayUpload;
+		$user->may_edit_own_settings = $mayEditOwnSettings;
+		$user->note = $note;
+		$user->quota_kb = $quota_kb;
+		if ($password !== null && $password !== '') {
+			$user->password = Hash::make($password);
+		}
+		$user->save();
 	}
 }

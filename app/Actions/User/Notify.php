@@ -1,43 +1,58 @@
 <?php
 
+/**
+ * SPDX-License-Identifier: MIT
+ * Copyright (c) 2017-2018 Tobias Reich
+ * Copyright (c) 2018-2025 LycheeOrg.
+ */
+
 namespace App\Actions\User;
 
-use App\Facades\AccessControl;
-use App\Models\Album;
+use App\Exceptions\ConfigurationKeyMissingException;
+use App\Exceptions\Internal\QueryBuilderException;
 use App\Models\Configs;
 use App\Models\Photo;
 use App\Models\User;
 use App\Notifications\PhotoAdded;
+use Illuminate\Database\Eloquent\ModelNotFoundException;
+use Illuminate\Database\MultipleRecordsFoundException;
+use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Notification;
 
 class Notify
 {
-	public function do(Photo $request, $album_id = null)
+	/**
+	 * Notify users that a new photo has been uploaded.
+	 *
+	 * @param Photo $photo
+	 *
+	 * @return void
+	 *
+	 * @throws ConfigurationKeyMissingException
+	 * @throws QueryBuilderException
+	 * @throws ModelNotFoundException
+	 * @throws MultipleRecordsFoundException
+	 */
+	public function do(Photo $photo): void
 	{
-		if (Configs::get_Value('new_photos_notification', '0') == '1') {
-			if ($album_id) {
-				$album = Album::find($album_id);
-			} else {
-				$album = Album::find($request->album_id);
-			}
-
-			$album_users = $album->shared_with;
-
-			$owner = User::find($album->owner_id);
-			$album_users->push($owner);
-
-			if ($album->owner_id != 0) {
-				$admin = User::find(0);
-				$album_users->push($admin);
-			}
-
-			$album_users = $album_users->unique()
-										->whereNotNull('email')
-										->where('id', '!=', AccessControl::id());
-
-			return Notification::send($album_users, new PhotoAdded($request));
-		} else {
-			return true;
+		if (!Configs::getValueAsBool('new_photos_notification')) {
+			return;
 		}
+
+		// Admin user is always notified
+		$users = User::query()->where('may_administrate', '=', true)->get();
+
+		$album = $photo->album;
+		if ($album !== null) {
+			$users = $users->concat($album->shared_with);
+			$users->push($album->owner);
+		}
+
+		$users = $users
+			->unique('id', true)
+			->whereNotNull('email')
+			->where('id', '!=', Auth::id());
+
+		Notification::send($users, new PhotoAdded($photo));
 	}
 }
